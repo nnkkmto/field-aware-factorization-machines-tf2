@@ -13,16 +13,18 @@ class FieldFactorizeLayer(tf.keras.layers.Layer):
         self.features_info = features_info
         self.feature_to_embedding_layer = OrderedDict()
 
-        field_names = [feature['name'] for feature in features_info]
-        self.field_combinations = itertools.combinations(field_names, 2)
+        field_indices = range(len(features_info))
+        self.field_index_combinations = list(itertools.combinations(field_indices, 2))
 
-        for feature in self.features_info:
-            for target_feature in self.features_info:
-                if target_feature['name'] != feature['name']:
-                    feature_name = feature['name'] + '-' + target_feature['name']
-                    self.create_embedding_layer(feature['is_sequence'], feature_name, feature['dim'])
+        # 全通りの組み合わせでembedding layer作成
+        self.field_index_permutations = itertools.permutations(field_indices, 2)
+        for field_index_permutation in self.field_index_permutations:
+            field_perm_name = str(field_index_permutation[0]) + '-' + str(field_index_permutation[1])
+            is_sequence = features_info[field_index_permutation[0]]['is_sequence']
+            dim = features_info[field_index_permutation[0]]['dim']
+            self.create_embedding_layer(field_perm_name, is_sequence, dim)
 
-    def create_embedding_layer(self, is_sequence, feature_name, dim):
+    def create_embedding_layer(self, feature_name, is_sequence, dim):
         initializer = tf.keras.initializers.RandomNormal(stddev=0.01, seed=None)
         if is_sequence:
             # sequenceのembedding
@@ -47,25 +49,23 @@ class FieldFactorizeLayer(tf.keras.layers.Layer):
         return embedding
 
     def call(self, inputs):
-        field_fm_term = None
-        for feature_input, feature in zip(inputs, self.features_info):
-            for target_input, target_feature in zip(inputs, self.features_info):
-                for feature_combination in self.field_combinations:
-                    if feature['name'] == feature_combination[0] and target_feature['name'] == feature_combination[1]:
-                        feature_name = feature_combination[0] + '-' + feature_combination[1]
-                        target_feature_name = feature_combination[1] + '-' + feature_combination[0]
-                        embedding = self.embed_inputs(
-                            feature_name, feature['is_sequence'], feature_input)
-                        target_embedding = self.embed_inputs(
-                            target_feature_name, target_feature['is_sequence'], target_input)
-                        dot_embedding = tf.matmul(embedding, target_embedding, transpose_b=True)
-                        if not field_fm_term:
-                            field_fm_term = dot_embedding
-                        else:
-                            field_fm_term = tf.add(field_fm_term, dot_embedding)
+        dot_embeddings = []
+        for feature_combination in self.field_index_combinations:
+            embedding_name = str(feature_combination[0]) + '-' + str(feature_combination[1])
+            input = inputs[feature_combination[0]]
+            target_embedding_name = str(feature_combination[1]) + '-' + str(feature_combination[0])
+            target_input = inputs[feature_combination[1]]
+            embedding = self.embed_inputs(
+                embedding_name, self.features_info[feature_combination[0]]['is_sequence'], input)
+            target_embedding = self.embed_inputs(
+                target_embedding_name, self.features_info[feature_combination[1]]['is_sequence'],
+                target_input)
+            dot_embedding = tf.matmul(embedding, target_embedding, transpose_b=True)
+            dot_embeddings.append(dot_embedding)
+        dot_embeddings = tf.keras.layers.Concatenate(axis=1, name='dot_embeddings_concat')(dot_embeddings)
+        field_fm_term = tf.math.reduce_sum(dot_embeddings, axis=1, keepdims=False)
 
         return field_fm_term
-
 
 class EmbeddingLayer(tf.keras.layers.Layer):
     def __init__(self, features_info, emb_dim, name_prefix=''):
@@ -129,14 +129,16 @@ class LinearLayer(tf.keras.layers.Layer):
 
 
 class FFM(tf.keras.Model):
-    def __init__(self, features_info, latent_dim=5):
+    def __init__(self, features_info, latent_dim=4):
         super(FFM, self).__init__()
-        self.factorize_layer = FieldFactorizeLayer(features_info, features_info, latent_dim)
+        self.factorize_layer = FieldFactorizeLayer(features_info, latent_dim)
         self.linear_layer = LinearLayer(features_info)
 
     def call(self, inputs):
         linear_terms = self.linear_layer(inputs)
         factorization_terms = self.factorize_layer(inputs)
+        print(factorization_terms)
         output = tf.add(linear_terms, factorization_terms)
+        print(output)
 
         return tf.keras.activations.sigmoid(output)

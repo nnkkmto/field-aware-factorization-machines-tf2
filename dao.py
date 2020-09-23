@@ -88,12 +88,9 @@ class LearningDao(abc.ABC):
             encoder = self.feature_to_encoder[feature['name']]
             if feature['is_sequence']:
                 # encode
-                print(values)
                 values = np.asarray([encoder.transform(value) for value in values])
-                print(values)
                 # padding
                 values = pad_sequences(values, maxlen=self.seq_max_len, padding='post', truncating='post')
-                print(values)
             else:
                 values = encoder.transform(values)
             # split
